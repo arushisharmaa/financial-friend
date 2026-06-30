@@ -80,7 +80,7 @@ export default function App() {
   const [newBudgetLimit, setNewBudgetLimit] = useState('');
   const [amount, setAmount] = useState('');
   const [type, setType] = useState('expense');
-  const [selectedCategory, setSelectedCategory] = useState(INITIAL_CATEGORIES[0].id);
+  const [selectedCategory, setSelectedCategory] = useState('1');
   const [description, setDescription] = useState('');
   const [txDate, setTxDate] = useState('');
 
@@ -116,7 +116,6 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
-    // Stream user-specific transactions
     const txQuery = query(collection(db, "users", user.uid, "transactions"), orderBy("date", "desc"));
     const unsubscribeTx = onSnapshot(txQuery, (snapshot) => {
       const txList = [];
@@ -124,7 +123,6 @@ export default function App() {
       setTransactions(txList);
     });
 
-    // Stream user-specific subscriptions
     const subQuery = query(collection(db, "users", user.uid, "subscriptions"));
     const unsubscribeSubs = onSnapshot(subQuery, (snapshot) => {
       const subList = [];
@@ -132,7 +130,6 @@ export default function App() {
       setSubscriptions(subList);
     });
 
-    // Fetch user-specific budgets configuration card
     const fetchBudgets = async () => {
       const budgetDocRef = doc(db, "users", user.uid, "configs", "budget_limits");
       const budgetSnap = await getDoc(budgetDocRef);
@@ -188,6 +185,25 @@ export default function App() {
 
   const handleSignOut = () => signOut(auth);
 
+  // --- REAL-TIME RIGHT-TO-LEFT CURRENCY FORMATTER MASK ---
+  const formatCurrencyInput = (rawText) => {
+    const digits = rawText.replace(/\D/g, '');
+    if (!digits) return '';
+    const numberValue = parseFloat(digits) / 100;
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2
+    }).format(numberValue);
+  };
+
+  const cleanInputToFloat = (val) => {
+    if (!val) return 0;
+    const sanitized = val.replace(/[\$,\s]/g, '');
+    const parsed = parseFloat(sanitized);
+    return isNaN(parsed) ? 0 : parsed;
+  };
+
   // --- ANALYTICS ENGINES ---
   const monthMetrics = useMemo(() => {
     let scopedTx = transactions.filter(t => t.date && t.date.startsWith(selectedMonth));
@@ -205,6 +221,13 @@ export default function App() {
         if (cat?.class === 'variable') variableTotal += t.amount;
       }
     });
+
+    // FIXED: Active tab filtering logic is now fully wired up to update the view stream
+    if (sortBy === 'income') {
+      scopedTx = scopedTx.filter(t => t.type === 'income');
+    } else if (sortBy === 'expense') {
+      scopedTx = scopedTx.filter(t => t.type === 'expense');
+    }
 
     const netSaved = income - expense;
     return {
@@ -245,12 +268,6 @@ export default function App() {
     let newM = calendarMonth + dir; let newY = calendarYear;
     if (newM > 11) { newM = 0; newY += 1; } if (newM < 0) { newM = 11; newY -= 1; }
     setCalendarMonth(newM); setCalendarYear(newY);
-  };
-
-  const cleanInputToFloat = (val) => {
-    if (!val) return 0;
-    const parsed = parseFloat(val.replace(/[\$,\s]/g, ''));
-    return isNaN(parsed) ? 0 : parsed;
   };
 
   // --- DATA MUTATION WRITE ACTIONS ---
@@ -377,25 +394,11 @@ export default function App() {
                 </View>
                 <View style={styles.dividerLine} />
                 <View style={styles.miniMetricBox}>
-                  <Text style={styles.miniLabel}>Total Outflow</Text>
+                  <Text style={styles.miniLabel}>Total Expenses</Text>
                   <Text style={[styles.miniValue, { color: '#F3F4F6' }]}>-${monthMetrics.expense.toLocaleString()}</Text>
                 </View>
               </View>
             </View>
-
-            {bankInsights.length > 0 && (
-              <View style={{ gap: 8 }}>
-                <Text style={styles.sectionTitle}>Key Intelligence Insights</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingBottom: 4 }}>
-                  {bankInsights.map((insight, index) => (
-                    <View key={index} style={[styles.insightCard, { borderColor: insight.type === 'danger' ? '#EF4444' : '#10B981' }]}>
-                      <Text style={styles.insightTitle}>{insight.title}</Text>
-                      <Text style={styles.insightDesc}>{insight.desc}</Text>
-                    </View>
-                  ))}
-                </ScrollView>
-              </View>
-            )}
 
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Ledger Logs</Text>
@@ -403,7 +406,7 @@ export default function App() {
                 {['all', 'income', 'expense'].map((pill) => (
                   <TouchableOpacity key={pill} style={[styles.miniPill, sortBy === pill && styles.miniPillActive]} onPress={() => setSortBy(pill)}>
                     <Text style={[styles.miniPillText, sortBy === pill && styles.miniPillTextActive]}>
-                      {pill === 'expense' ? 'Outflows' : pill.charAt(0).toUpperCase() + pill.slice(1)}
+                      {pill === 'all' ? 'All' : pill === 'income' ? 'Income' : 'Expenses'}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -417,7 +420,7 @@ export default function App() {
                 const cat = INITIAL_CATEGORIES.find(c => c.id === tx.categoryId);
                 return (
                   <TouchableOpacity key={tx.id} style={styles.txRowCard} onPress={() => {
-                    setEditingTxId(tx.id); setAmount(tx.amount.toString()); setDescription(tx.description);
+                    setEditingTxId(tx.id); setAmount(tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })); setDescription(tx.description);
                     setType(tx.type); setTxDate(tx.date); setSelectedCategory(tx.categoryId); setModalVisible(true);
                   }}>
                     <View style={styles.txLeftAlign}>
@@ -444,16 +447,15 @@ export default function App() {
           </View>
         )}
 
-        {/* TAB 2: EFFICIENCY, CEILINGS & SANKEY DIAGRAM */}
         {activeTab === 'analysis' && (
           <View style={styles.viewContainer}>
-            <Text style={styles.sectionTitle}>Ecosystem Financial Sankey Flow</Text>
+            <Text style={styles.sectionTitle}>Financial Flow Map</Text>
             <View style={styles.analyticsCard}>
               <View style={styles.sankeyContainer}>
                 <View style={styles.sankeyPillar}>
-                  <Text style={styles.sankeyNodeHeader}>INFLOW SOURCE</Text>
+                  <Text style={styles.sankeyNodeHeader}>INFLOW</Text>
                   <View style={[styles.sankeyNodeBlock, { backgroundColor: '#10B981', height: 110 }]}>
-                    <Text style={styles.sankeyNodeText}>Gross Inflows</Text>
+                    <Text style={styles.sankeyNodeText}>Income</Text>
                     <Text style={styles.sankeyNodeValue}>${monthMetrics.income.toLocaleString()}</Text>
                   </View>
                 </View>
@@ -462,16 +464,17 @@ export default function App() {
                   <Ionicons name="arrow-forward-outline" size={16} color="#475569" style={{ height: 40 }} />
                   <Ionicons name="arrow-forward-outline" size={16} color="#475569" style={{ height: 40 }} />
                 </View>
+                {/* FIXED: Swapped out complex financial jargon for ultra user-friendly terminology */}
                 <View style={[styles.sankeyPillar, { flex: 1.3 }]}>
-                  <Text style={styles.sankeyNodeHeader}>ALLOCATION TARGET</Text>
-                  <View style={[styles.sankeyTargetStrip, { borderLeftColor: '#4DABF7' }]}><Text style={styles.sankeyStripLabel}>Fixed Commitments</Text><Text style={styles.sankeyStripValue}>${monthMetrics.fixedTotal.toLocaleString()}</Text></View>
-                  <View style={[styles.sankeyTargetStrip, { borderLeftColor: '#DA77F2' }]}><Text style={styles.sankeyStripLabel}>Variable Outlays</Text><Text style={styles.sankeyStripValue}>${monthMetrics.variableTotal.toLocaleString()}</Text></View>
-                  <View style={[styles.sankeyTargetStrip, { borderLeftColor: '#10B981', backgroundColor: '#064E3B20' }]}><Text style={[styles.sankeyStripLabel, { color: '#10B981' }]}>Net Vault Reserve</Text><Text style={[styles.sankeyStripValue, { color: '#10B981' }]}>${Math.max(0, monthMetrics.balance).toLocaleString()}</Text></View>
+                  <Text style={styles.sankeyNodeHeader}>ALLOCATION OUTCOME</Text>
+                  <View style={[styles.sankeyTargetStrip, { borderLeftColor: '#4DABF7' }]}><Text style={styles.sankeyStripLabel}>Fixed Expenses</Text><Text style={styles.sankeyStripValue}>${monthMetrics.fixedTotal.toLocaleString()}</Text></View>
+                  <View style={[styles.sankeyTargetStrip, { borderLeftColor: '#DA77F2' }]}><Text style={styles.sankeyStripLabel}>Variable Expenses</Text><Text style={styles.sankeyStripValue}>${monthMetrics.variableTotal.toLocaleString()}</Text></View>
+                  <View style={[styles.sankeyTargetStrip, { borderLeftColor: '#10B981', backgroundColor: '#064E3B20' }]}><Text style={[styles.sankeyStripLabel, { color: '#10B981' }]}>Net Savings</Text><Text style={[styles.sankeyStripValue, { color: '#10B981' }]}>${Math.max(0, monthMetrics.balance).toLocaleString()}</Text></View>
                 </View>
               </View>
             </View>
 
-            <Text style={styles.sectionTitle}>Category Ceiling Limits</Text>
+            <Text style={styles.sectionTitle}>Monthly Spending Limits</Text>
             <View style={styles.analyticsCard}>
               {INITIAL_CATEGORIES.filter(c => c.type === 'expense').map(cat => {
                 const spent = monthMetrics.catTotals[cat.id] || 0;
@@ -488,12 +491,12 @@ export default function App() {
               })}
             </View>
 
-            <Text style={styles.sectionTitle}>Accumulation Runway Projections</Text>
+            <Text style={styles.sectionTitle}>Savings Projections</Text>
             <View style={styles.analyticsCard}>
-              <Text style={{ color: '#94A3B8', fontSize: 13, marginBottom: 12 }}>Based on your live tracking surplus of <Text style={{ color: '#10B981', fontWeight: '700' }}>${monthMetrics.balance.toLocaleString()}</Text> for this active scope:</Text>
-              <View style={styles.runwayRow}><View style={styles.runwayPoint}><Text style={styles.runwayTime}>In 1 Cycle</Text><Text style={styles.runwayDesc}>Deficit clearance core balance buffer</Text></View><Text style={styles.runwayValue}>${(monthMetrics.balance * 1).toLocaleString()}</Text></View>
-              <View style={styles.runwayRow}><View style={styles.runwayPoint}><Text style={styles.runwayTime}>In 6 Cycles</Text><Text style={styles.runwayDesc}>Core Emergency Base Funding runway</Text></View><Text style={styles.runwayValue}>${(monthMetrics.balance * 6).toLocaleString()}</Text></View>
-              <View style={styles.runwayRow}><View style={styles.runwayPoint}><Text style={styles.runwayTime}>In 1 Year</Text><Text style={styles.runwayDesc}>Aggressive Wealth Accumulation Yield</Text></View><Text style={[styles.runwayValue, { color: '#38BDF8' }]}>${(monthMetrics.balance * 12).toLocaleString()}</Text></View>
+              <Text style={{ color: '#94A3B8', fontSize: 13, marginBottom: 12 }}>Based on your current monthly surplus of <Text style={{ color: '#10B981', fontWeight: '700' }}>${monthMetrics.balance.toLocaleString()}</Text>:</Text>
+              <View style={styles.runwayRow}><View style={styles.runwayPoint}><Text style={styles.runwayTime}>In 1 Month</Text><Text style={styles.runwayDesc}>Immediate accumulated cushion</Text></View><Text style={styles.runwayValue}>${(monthMetrics.balance * 1).toLocaleString()}</Text></View>
+              <View style={styles.runwayRow}><View style={styles.runwayPoint}><Text style={styles.runwayTime}>In 6 Months</Text><Text style={styles.runwayDesc}>Solid emergency reserve safety net</Text></View><Text style={styles.runwayValue}>${(monthMetrics.balance * 6).toLocaleString()}</Text></View>
+              <View style={styles.runwayRow}><View style={styles.runwayPoint}><Text style={styles.runwayTime}>In 1 Year</Text><Text style={styles.runwayDesc}>Total annual wealth generation loop</Text></View><Text style={[styles.runwayValue, { color: '#38BDF8' }]}>${(monthMetrics.balance * 12).toLocaleString()}</Text></View>
             </View>
           </View>
         )}
@@ -517,7 +520,9 @@ export default function App() {
                     </View>
                     <View style={styles.txRightAlign}>
                       <Text style={[styles.txAmountMetric, { color: '#FF6B6B' }]}>-${sub.amount.toFixed(2)}/mo</Text>
-                      <TouchableOpacity style={{ marginLeft: 14 }} onPress={() => handleDeleteSub(sub.id)}><Ionicons name="trash-outline" size={14} color="#EF4444" /></TouchableOpacity>
+                      <TouchableOpacity style={{ marginLeft: 14 }} onPress={() => handleDeleteSub(sub.id)}>
+                        <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                      </TouchableOpacity>
                     </View>
                   </View>
                 );
@@ -527,22 +532,36 @@ export default function App() {
         )}
       </ScrollView>
 
-      {/* FLOATING ACTION ENTRY ATTACHER BUTTON */}
-      <TouchableOpacity style={styles.fabTrigger} onPress={() => { setEditingTxId(null); setAmount(''); setDescription(''); setType('expense'); setTxDate(new Date().toISOString().split('T')[0]); setSelectedCategory(INITIAL_CATEGORIES.find(c => c.type === 'expense')?.id || '1'); setModalVisible(true); }}><Ionicons name="add" size={24} color="#FFF" /></TouchableOpacity>
+      {/* FLOATING ACTION RECORD ENTRY TRIGGER BUTTON */}
+      <TouchableOpacity style={styles.fabTrigger} onPress={() => { setEditingTxId(null); setAmount(''); setDescription(''); setType('expense'); setTxDate(new Date().toISOString().split('T')[0]); setSelectedCategory('1'); setModalVisible(true); }}><Ionicons name="add" size={24} color="#FFF" /></TouchableOpacity>
 
-      {/* CORE NAVIGATION system INTERFACING PROFILE */}
+      {/* CORE NAVIGATION BAR */}
       <View style={styles.tabNavBar}>
-        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('home')}><Ionicons name="flash" size={18} color={activeTab === 'home' ? '#38BDF8' : '#64748B'} /><Text style={[styles.tabLabel, activeTab === 'home' && styles.tabLabelActive]}>Stream</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('analysis')}><Ionicons name="pie-chart" size={18} color={activeTab === 'analysis' ? '#38BDF8' : '#64748B'} /><Text style={[styles.tabLabel, activeTab === 'analysis' && styles.tabLabelActive]}>Efficiency</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('history')}><Ionicons name="refresh-circle" size={20} color={activeTab === 'history' ? '#38BDF8' : '#64748B'} /><Text style={[styles.tabLabel, activeTab === 'history' && styles.tabLabelActive]}>Subscriptions</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('home')}>
+          <Ionicons name="flash" size={18} color={activeTab === 'home' ? '#38BDF8' : '#64748B'} />
+          <Text style={[styles.tabLabel, activeTab === 'home' && styles.tabLabelActive]}>Stream</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('analysis')}>
+          <Ionicons name="pie-chart" size={18} color={activeTab === 'analysis' ? '#38BDF8' : '#64748B'} />
+          <Text style={[styles.tabLabel, activeTab === 'analysis' && styles.tabLabelActive]}>Efficiency</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.tabItem} onPress={() => setActiveTab('history')}>
+          <Ionicons name="refresh-circle" size={20} color={activeTab === 'history' ? '#38BDF8' : '#64748B'} />
+          <Text style={[styles.tabLabel, activeTab === 'history' && styles.tabLabelActive]}>Subscriptions</Text>
+        </TouchableOpacity>
       </View>
 
       {/* MODAL 1: TIMELINE SELECTOR */}
       <Modal animationType="fade" transparent visible={historyMenuVisible} onRequestClose={() => setHistoryMenuVisible(false)}>
         <View style={styles.centeredModalOverlay}>
           <View style={[styles.modalBody, { borderRadius: 16, width: isDesktopLayout ? 420 : '90%' }]}>
-            <View style={styles.modalHeaderRow}><Text style={styles.modalTitleText}>Scope Timeline Focus Selector</Text><TouchableOpacity onPress={() => setHistoryMenuVisible(false)}><Ionicons name="close" size={22} color="#64748B" /></TouchableOpacity></View>
-            <ScrollView style={{ maxHeight: 250 }}>{uniqueMonths.map(m => (<TouchableOpacity key={m} style={styles.historySelectRow} onPress={() => { setSelectedMonth(m); setHistoryMenuVisible(false); }}><Text style={styles.historySelectName}>{formatMonthLabel(m)}</Text></TouchableOpacity>))}</ScrollView>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitleText}>Scope Timeline Focus Selector</Text>
+              <TouchableOpacity onPress={() => setHistoryMenuVisible(false)}><Ionicons name="close" size={22} color="#64748B" /></TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 250 }}>{uniqueMonths.map(m => (<TouchableOpacity key={m} style={styles.historySelectRow} onPress={() => { setSelectedMonth(m); setHistoryMenuVisible(false); }}>
+                  <Text style={styles.historySelectName}>{formatMonthLabel(m)}</Text>
+                </TouchableOpacity>))}</ScrollView>
           </View>
         </View>
       </Modal>
@@ -551,28 +570,59 @@ export default function App() {
       <Modal animationType="slide" transparent visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalBody, { width: isDesktopLayout ? 500 : '100%' }]}>
-            <View style={styles.modalHeaderRow}><Text style={styles.modalTitleText}>{editingTxId ? 'Edit Activity Node' : 'Log Operational Ledger Node'}</Text><TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity></View>
-            <View style={styles.segControlRow}>
-              <TouchableOpacity style={[styles.segBtn, type === 'expense' && styles.segBtnActive]} onPress={() => setType('expense')}><Text style={[styles.segTxt, type === 'expense' && styles.segTxtActive]}>Spending</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.segBtn, type === 'income' && styles.segBtnActive]} onPress={() => setType('income')}><Text style={[styles.segTxt, type === 'income' && styles.segTxtActive]}>Inflow</Text></TouchableOpacity>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitleText}>{editingTxId ? 'Edit Item' : 'Log New Item'}</Text>
+              <TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
             </View>
-            <TextInput style={styles.massiveInput} placeholder="$0.00" placeholderTextColor="#1E293B" keyboardType="numeric" value={amount} onChangeText={setAmount} />
+            
+            <View style={styles.segControlRow}>
+              <TouchableOpacity 
+                style={[styles.segBtn, type === 'expense' && styles.segBtnActive]} 
+                onPress={(e) => {
+                  if (e && e.preventDefault) e.preventDefault();
+                  setType('expense'); 
+                  setSelectedCategory('1'); 
+                }}
+              >
+                <Text style={[styles.segTxt, type === 'expense' && styles.segTxtActive]}>Spending</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.segBtn, type === 'income' && styles.segBtnActive]} 
+                onPress={(e) => {
+                  if (e && e.preventDefault) e.preventDefault();
+                  setType('income'); 
+                  setSelectedCategory('7'); 
+                }}
+              >
+                <Text style={[styles.segTxt, type === 'income' && styles.segTxtActive]}>Inflow</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <TextInput 
+              style={styles.massiveInput} 
+              placeholder="$0.00" 
+              placeholderTextColor="#1E293B" 
+              keyboardType="numeric" 
+              value={amount} 
+              onChangeText={(text) => setAmount(formatCurrencyInput(text))} 
+            />
+            
             <TextInput style={styles.lineFieldInput} placeholder="Description notes tag..." placeholderTextColor="#4A5568" value={description} onChangeText={setDescription} />
             <TouchableOpacity style={styles.dateSelectorToggleRow} onPress={() => setDatePickerVisible(true)}><View style={{ flexDirection: 'row', alignItems: 'center' }}><Ionicons name="calendar-clear-outline" size={16} color="#38BDF8" style={{ marginRight: 10 }} /><Text style={styles.dateToggleText}>Ledger Value Processing Date</Text></View><Text style={styles.dateValueHighlight}>{txDate || 'Select Date'}</Text></TouchableOpacity>
+            
             <View style={styles.chipMatrixRow}>
-  {INITIAL_CATEGORIES.filter(c => c.type === type).map(cat => (
-    <TouchableOpacity 
-      key={cat.id} 
-      style={[styles.filterChip, selectedCategory === cat.id && { backgroundColor: cat.color, borderColor: cat.color }]} 
-      onPress={() => setSelectedCategory(cat.id)}
-    >
-      <Text style={[styles.chipLabelText, selectedCategory === cat.id && { color: '#000', fontWeight: '700' }]}>
-        {cat.name}
-      </Text>
-    </TouchableOpacity>
-  ))}
-</View>
-            <TouchableOpacity style={styles.executeActionBtn} onPress={handleSaveTransaction}><Text style={styles.executeBtnTxt}>Execute Sync</Text></TouchableOpacity>
+              {INITIAL_CATEGORIES.filter(c => c.type === type).map(cat => (
+                <TouchableOpacity 
+                  key={cat.id} 
+                  style={[styles.filterChip, selectedCategory === cat.id && { backgroundColor: cat.color, borderColor: cat.color }]} 
+                  onPress={() => setSelectedCategory(cat.id)}
+                >
+                  <Text style={[styles.chipLabelText, selectedCategory === cat.id && { color: '#000', fontWeight: '700' }]}>{cat.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            
+            <TouchableOpacity style={styles.executeActionBtn} onPress={handleSaveTransaction}><Text style={styles.executeBtnTxt}>Save</Text></TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -588,11 +638,11 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* MODAL 4: BUDGET MATRIX ALLOCATION RESTRICTION LIMITER */}
+      {/* MODAL 4: BUDGET LIMIT CONFIGURATOR */}
       <Modal animationType="fade" transparent visible={budgetModalVisible} onRequestClose={() => setBudgetModalVisible(false)}>
         <View style={styles.centeredModalOverlay}>
           <View style={[styles.modalBody, { width: isDesktopLayout ? 400 : '90%', borderRadius: 16 }]}>
-            <Text style={styles.modalTitleText}>Set Category Ceiling Limit</Text>
+            <Text style={styles.modalTitleText}>Set Category Limit</Text>
             <Text style={{ color: '#64748B', fontSize: 13, marginBottom: 16 }}>Establish a targeted spending restriction allowance for this category node.</Text>
             <TextInput style={styles.massiveInput} placeholder="0" placeholderTextColor="#1E293B" keyboardType="numeric" value={newBudgetLimit} onChangeText={setNewBudgetLimit} autoFocus />
             <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}><TouchableOpacity style={[styles.executeActionBtn, { flex: 1, backgroundColor: '#1E293B' }]} onPress={() => setBudgetModalVisible(false)}><Text style={[styles.executeBtnTxt, { color: '#FFF' }]}>Cancel</Text></TouchableOpacity><TouchableOpacity style={[styles.executeActionBtn, { flex: 1 }]} onPress={handleUpdateBudget}><Text style={styles.executeBtnTxt}>Apply Limit</Text></TouchableOpacity></View>
@@ -606,8 +656,14 @@ export default function App() {
           <View style={[styles.modalBody, { width: isDesktopLayout ? 450 : '100%' }]}>
             <Text style={styles.modalTitleText}>Map Structural Subscription Bill</Text>
             <TextInput style={styles.lineFieldInput} placeholder="Billing provider name (e.g. Spotify)" placeholderTextColor="#4A5568" value={newSubDesc} onChangeText={setNewSubDesc} />
-            <TextInput style={styles.massiveInput} placeholder="$0.00" placeholderTextColor="#1E293B" keyboardType="numeric" value={newSubAmount} onChangeText={setNewSubAmount} />
-            <View style={styles.chipMatrixRow}>{INITIAL_CATEGORIES.filter(c => c.type === 'expense').map(cat => (<TouchableOpacity key={cat.id} style={[styles.filterChip, newSubCat === cat.id && { backgroundColor: cat.color, borderColor: cat.color }]} onPress={() => setNewSubCat(cat.id)}><Text style={[styles.chipLabelText, newSubCat === cat.id && { color: '#000', fontWeight: '700' }]}>{cat.name}</Text></TouchableOpacity>))}</View>
+            <TextInput style={styles.massiveInput} placeholder="$0.00" placeholderTextColor="#1E293B" keyboardType="numeric" value={newSubAmount} onChangeText={(text) => setNewSubAmount(formatCurrencyInput(text))} />
+            <View style={styles.chipMatrixRow}>
+              {INITIAL_CATEGORIES.filter(c => c.type === 'expense').map(cat => (
+                <TouchableOpacity key={cat.id} style={[styles.filterChip, newSubCat === cat.id && { backgroundColor: cat.color, borderColor: cat.color }]} onPress={() => setNewSubCat(cat.id)}>
+                  <Text style={[styles.chipLabelText, newSubCat === cat.id && { color: '#000', fontWeight: '700' }]}>{cat.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <TouchableOpacity style={styles.executeActionBtn} onPress={handleCreateSubscription}><Text style={styles.executeBtnTxt}>Add to Architecture</Text></TouchableOpacity>
           </View>
         </View>
@@ -617,7 +673,7 @@ export default function App() {
   );
 }
 
-// --- EXTENDED SYSTEM STYLES SYSTEM DESIGN SPECIFICATION ---
+// --- CONFIG STYLES SYSTEM DESIGN SPECIFICATION ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#070A13' },
   globalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderColor: '#141B2D', paddingTop: Platform.OS === 'ios' ? 12 : 16 },
